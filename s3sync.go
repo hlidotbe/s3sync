@@ -3,7 +3,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,6 +15,8 @@ package s3sync
 import (
 	"context"
 	"errors"
+	"fmt"
+	"mime"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -27,7 +29,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"github.com/gabriel-vasile/mimetype"
 )
 
 // Manager manages the sync operation.
@@ -148,14 +149,23 @@ func (m *Manager) Sync(source, dest string) error {
 func (m *Manager) GetStatistics() SyncStatistics {
 	m.statistics.mutex.Lock()
 	defer m.statistics.mutex.Unlock()
-	return SyncStatistics{Bytes: m.statistics.Bytes, Files: m.statistics.Files, DeletedFiles: m.statistics.DeletedFiles}
+	return SyncStatistics{
+		Bytes:        m.statistics.Bytes,
+		Files:        m.statistics.Files,
+		DeletedFiles: m.statistics.DeletedFiles,
+	}
 }
 
 func isS3URL(url *url.URL) bool {
 	return url.Scheme == "s3"
 }
 
-func (m *Manager) syncS3ToS3(ctx context.Context, chJob chan func(), sourcePath *s3Path, destPath *s3Path) error {
+func (m *Manager) syncS3ToS3(
+	ctx context.Context,
+	chJob chan func(),
+	sourcePath *s3Path,
+	destPath *s3Path,
+) error {
 	wg := &sync.WaitGroup{}
 	errs := &multiErr{}
 	for source := range filterFilesForSync(
@@ -180,10 +190,14 @@ func (m *Manager) syncS3ToS3(ctx context.Context, chJob chan func(), sourcePath 
 	wg.Wait()
 
 	return errs.ErrOrNil()
-
 }
 
-func (m *Manager) syncLocalToS3(ctx context.Context, chJob chan func(), sourcePath string, destPath *s3Path) error {
+func (m *Manager) syncLocalToS3(
+	ctx context.Context,
+	chJob chan func(),
+	sourcePath string,
+	destPath *s3Path,
+) error {
 	wg := &sync.WaitGroup{}
 	errs := &multiErr{}
 	for source := range filterFilesForSync(
@@ -215,7 +229,12 @@ func (m *Manager) syncLocalToS3(ctx context.Context, chJob chan func(), sourcePa
 }
 
 // syncS3ToLocal syncs the given s3 path to the given local path.
-func (m *Manager) syncS3ToLocal(ctx context.Context, chJob chan func(), sourcePath *s3Path, destPath string) error {
+func (m *Manager) syncS3ToLocal(
+	ctx context.Context,
+	chJob chan func(),
+	sourcePath *s3Path,
+	destPath string,
+) error {
 	wg := &sync.WaitGroup{}
 	errs := &multiErr{}
 	for source := range filterFilesForSync(
@@ -246,7 +265,12 @@ func (m *Manager) syncS3ToLocal(ctx context.Context, chJob chan func(), sourcePa
 	return errs.ErrOrNil()
 }
 
-func (m *Manager) copyS3ToS3(ctx context.Context, file *fileInfo, sourcePath *s3Path, destPath *s3Path) error {
+func (m *Manager) copyS3ToS3(
+	ctx context.Context,
+	file *fileInfo,
+	sourcePath *s3Path,
+	destPath *s3Path,
+) error {
 	println("Copying", file.name, "to", destPath.String())
 	if m.dryrun {
 		return nil
@@ -258,7 +282,6 @@ func (m *Manager) copyS3ToS3(ctx context.Context, file *fileInfo, sourcePath *s3
 		Key:        aws.String(file.name),
 		ACL:        m.acl,
 	})
-
 	if err != nil {
 		return err
 	}
@@ -348,7 +371,8 @@ func (m *Manager) upload(file *fileInfo, sourcePath string, destPath *s3Path) er
 	}
 
 	destFile := *destPath
-	if strings.HasSuffix(destPath.bucketPrefix, "/") || destPath.bucketPrefix == "" || !file.singleFile {
+	if strings.HasSuffix(destPath.bucketPrefix, "/") || destPath.bucketPrefix == "" ||
+		!file.singleFile {
 		// If source is a single file and destination is not a directory, use destination URL as is.
 		// Using filepath.ToSlash for change backslash to slash on Windows
 		destFile.bucketPrefix = filepath.ToSlash(filepath.Join(destPath.bucketPrefix, file.name))
@@ -364,12 +388,11 @@ func (m *Manager) upload(file *fileInfo, sourcePath string, destPath *s3Path) er
 	case m.contentType != nil:
 		contentType = m.contentType
 	case m.guessMime:
-		mime, err := mimetype.DetectFile(sourceFilename)
-		if err != nil {
-			return err
+		mime := mime.TypeByExtension(filepath.Ext(sourceFilename))
+		if mime == "" {
+			return fmt.Errorf("No mimetype detected for %s", sourceFilename)
 		}
-		s := mime.String()
-		contentType = &s
+		contentType = &mime
 	}
 
 	reader, err := os.Open(sourceFilename)
@@ -398,7 +421,8 @@ func (m *Manager) upload(file *fileInfo, sourcePath string, destPath *s3Path) er
 
 func (m *Manager) deleteRemote(file *fileInfo, destPath *s3Path) error {
 	destFile := *destPath
-	if strings.HasSuffix(destPath.bucketPrefix, "/") || destPath.bucketPrefix == "" || !file.singleFile {
+	if strings.HasSuffix(destPath.bucketPrefix, "/") || destPath.bucketPrefix == "" ||
+		!file.singleFile {
 		// If source is a single file and destination is not a directory, use destination URL as is.
 		// Using filepath.ToSlash for change backslash to slash on Windows
 		destFile.bucketPrefix = filepath.ToSlash(filepath.Join(destPath.bucketPrefix, file.name))
@@ -438,7 +462,12 @@ func (m *Manager) listS3Files(ctx context.Context, path *s3Path) chan *fileInfo 
 }
 
 // listS3FileWithToken lists (send to the result channel) the s3 files from the given continuation token.
-func (m *Manager) listS3FileWithToken(ctx context.Context, c chan *fileInfo, path *s3Path, token *string) *string {
+func (m *Manager) listS3FileWithToken(
+	ctx context.Context,
+	c chan *fileInfo,
+	path *s3Path,
+	token *string,
+) *string {
 	list, err := m.s3.ListObjectsV2(&s3.ListObjectsV2Input{
 		Bucket:            &path.bucket,
 		Prefix:            &path.bucketPrefix,
@@ -540,12 +569,17 @@ func listLocalFiles(ctx context.Context, basePath string) chan *fileInfo {
 		if err != nil {
 			sendErrorInfoToChannel(ctx, c, err)
 		}
-
 	}()
 	return c
 }
 
-func sendFileInfoToChannel(ctx context.Context, c chan *fileInfo, basePath, path string, stat os.FileInfo, singleFile bool) {
+func sendFileInfoToChannel(
+	ctx context.Context,
+	c chan *fileInfo,
+	basePath, path string,
+	stat os.FileInfo,
+	singleFile bool,
+) {
 	if stat == nil || stat.IsDir() {
 		return
 	}
@@ -592,7 +626,8 @@ func filterFilesForSync(sourceFileChan, destFileChan chan *fileInfo, del bool) c
 			// 1. The dest doesn't exist
 			// 2. The dest doesn't have the same size as the source
 			// 3. The dest is older than the source
-			if !ok || sourceInfo.size != destInfo.size || sourceInfo.lastModified.After(destInfo.lastModified) {
+			if !ok || sourceInfo.size != destInfo.size ||
+				sourceInfo.lastModified.After(destInfo.lastModified) {
 				c <- &fileOp{fileInfo: sourceInfo}
 			}
 			if ok {
