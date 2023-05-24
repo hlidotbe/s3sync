@@ -33,16 +33,17 @@ import (
 
 // Manager manages the sync operation.
 type Manager struct {
-	s3             s3iface.S3API
-	nJobs          int
-	del            bool
-	dryrun         bool
-	acl            *string
-	guessMime      bool
-	contentType    *string
-	downloaderOpts []func(*s3manager.Downloader)
-	uploaderOpts   []func(*s3manager.Uploader)
-	statistics     SyncStatistics
+	s3              s3iface.S3API
+	nJobs           int
+	del             bool
+	dryrun          bool
+	acl             *string
+	guessMime       bool
+	contentType     *string
+	downloaderOpts  []func(*s3manager.Downloader)
+	uploaderOpts    []func(*s3manager.Uploader)
+	uploadInputOpts []func(*s3manager.UploadInput)
+	statistics      SyncStatistics
 }
 
 // SyncStatistics captures the sync statistics.
@@ -402,16 +403,21 @@ func (m *Manager) upload(file *fileInfo, sourcePath string, destPath *s3Path) er
 
 	defer reader.Close()
 
-	_, err = s3manager.NewUploaderWithClient(
-		m.s3,
-		m.uploaderOpts...,
-	).Upload(&s3manager.UploadInput{
+	input := &s3manager.UploadInput{
 		Bucket:      aws.String(destFile.bucket),
 		Key:         aws.String(destFile.bucketPrefix),
 		ACL:         m.acl,
 		Body:        reader,
 		ContentType: contentType,
-	})
+	}
+	for _, f := range m.uploadInputOpts {
+		f(input)
+	}
+
+	_, err = s3manager.NewUploaderWithClient(
+		m.s3,
+		m.uploaderOpts...,
+	).Upload(input)
 	if err != nil {
 		return err
 	}

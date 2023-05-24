@@ -79,3 +79,9 @@ func WithUploaderOptions(opts ...func(*s3manager.Uploader)) Option {
 		m.uploaderOpts = opts
 	}
 }
+
+func WithInputUploadOptions(opts ...func(*s3manager.UploadInput)) Option {
+	return func(m *Manager) {
+		m.uploadInputOpts = opts
+	}
+}
